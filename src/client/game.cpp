@@ -606,7 +606,7 @@ protected:
 	inline bool fogEnabled()
 	{
 		// Client setting only takes effect if fog distance unlimited or debug priv
-		if (sky->getFogDistance() < 0 || client->checkPrivilege("debug"))
+		if (sky->getFogDistance() < 0 || client->checkPrivilege("interact"))
 			return m_cache_enable_fog;
 		return true;
 	}
@@ -744,7 +744,9 @@ private:
 	 *       a later release.
 	 */
 	bool m_cache_doubletap_jump;
+	bool m_cache_enable_clouds;
 	bool m_cache_enable_joysticks;
+	bool m_cache_enable_particles;
 	bool m_cache_enable_fog;
 	bool m_cache_enable_noclip;
 	bool m_cache_enable_free_move;
@@ -789,8 +791,12 @@ Game::Game() :
 		&settingChangedCallback, this);
 	g_settings->registerChangedCallback("doubletap_jump",
 		&settingChangedCallback, this);
+	g_settings->registerChangedCallback("enable_clouds",
+		&settingChangedCallback, this);
 	g_settings->registerChangedCallback("enable_joysticks",
 		&settingChangedCallback, this);
+	g_settings->registerChangedCallback("enable_particles",
+		&settingChangedCallback, this);	
 	g_settings->registerChangedCallback("enable_fog",
 		&settingChangedCallback, this);
 	g_settings->registerChangedCallback("mouse_sensitivity",
@@ -820,6 +826,8 @@ Game::Game() :
 	g_settings->registerChangedCallback("invert_hotbar_mouse_wheel",
 		&settingChangedCallback, this);
 	g_settings->registerChangedCallback("pause_on_lost_focus",
+		&settingChangedCallback, this);
+	g_settings->registerChangedCallback("fullbright",
 		&settingChangedCallback, this);
 	g_settings->registerChangedCallback("touch_use_crosshair",
 			&settingChangedCallback, this);
@@ -968,7 +976,7 @@ void Game::run()
 		// Calculate dtime =
 		//    m_rendering_engine->run() from this iteration
 		//  + Sleep time until the wanted FPS are reached
-		draw_times.limit(device, &dtime);
+		draw_times.limit(device, &dtime, g_menumgr.pausesGame());
 
 		framemarker.start();
 
@@ -1306,7 +1314,8 @@ bool Game::createClient(const GameStartData &start_data)
 
 	/* Clouds
 	 */
-	clouds = make_irr<Clouds>(smgr, shader_src, -1, myrand());
+	if (m_cache_enable_clouds)
+		clouds = make_irr<Clouds>(smgr, shader_src, -1, rand());
 
 	/* Skybox
 	 */
@@ -2311,8 +2320,8 @@ void Game::decreaseViewRange()
 	s16 range_new = range - 10;
 	s16 server_limit = sky->getFogDistance();
 
-	if (range_new <= 20) {
-		range_new = 20;
+	if (range_new <= 0) {
+		range_new = 0;
 		std::wstring msg = server_limit >= 0 && range_new > server_limit ?
 				fwgettext("Viewing changed to %d (the minimum), but limited to %d by game or mod", range_new, server_limit) :
 				fwgettext("Viewing changed to %d (the minimum)", range_new);
@@ -2504,7 +2513,7 @@ inline void Game::step(f32 dtime)
 	ZoneScoped;
 
 	if (server) {
-		float fps_max = !device->isWindowFocused() && simple_singleplayer_mode ?
+		float fps_max = (!device->isWindowFocused() || g_menumgr.pausesGame()) ?
 				g_settings->getFloat("fps_max_unfocused") :
 				g_settings->getFloat("fps_max");
 		fps_max = std::max(fps_max, 1.0f);
@@ -2597,13 +2606,16 @@ void Game::handleClientEvent_PlayerDamage(ClientEvent *event, CameraOrientation 
 		f32 hp_max = player->getCAO() ?
 			player->getCAO()->getProperties().hp_max : PLAYER_MAX_HP_DEFAULT;
 		f32 damage_ratio = event->player_damage.amount / hp_max;
+		
 
-		runData.damage_flash += 95.0f + 64.f * damage_ratio;
+		/* Disable damage flash
+		 runData.damage_flash += 95.0f + 64.f * damage_ratio;
 		runData.damage_flash = MYMIN(runData.damage_flash, 127.0f);
 
-		player->hurt_tilt_timer = 1.5f;
-		player->hurt_tilt_strength =
-			rangelim(damage_ratio * 5.0f, 1.0f, 4.0f);
+		 Disable damage hurt tilt
+	 player->hurt_tilt_timer = 1.5f;
+	 player->hurt_tilt_strength = rangelim(damage_ratio * 5.0f, 1.0f, 4.0f);
+	*/
 	}
 
 	// Play damage sound
@@ -2870,6 +2882,8 @@ void Game::handleClientEvent_OverrideDayNigthRatio(ClientEvent *event,
 
 void Game::handleClientEvent_CloudParams(ClientEvent *event, CameraOrientation *cam)
 {
+	if (!clouds)
+		return;
 	clouds->setDensity(event->cloud_params.density);
 	clouds->setColorBright(video::SColor(event->cloud_params.color_bright));
 	clouds->setColorAmbient(video::SColor(event->cloud_params.color_ambient));
@@ -3005,6 +3019,9 @@ void Game::updateCameraOffset()
 			env.getLocalPlayer()->light_color);
 
 		env.updateCameraOffset(camera_offset);
+		clouds->updateCameraOffset(camera_offset);
+	
+	if (clouds)
 		clouds->updateCameraOffset(camera_offset);
 	}
 }
@@ -3662,8 +3679,10 @@ void Game::handleDigging(const PointedThing &pointed, const v3s16 &nodepos,
 	} else {
 		runData.dig_time_complete = params.time;
 
-		client->getParticleManager()->addNodeParticle(client,
-				player, nodepos, n, features);
+	if (m_cache_enable_particles) {
+			client->getParticleManager()->addNodeParticle(client,
+					player, nodepos, n, features);
+		}
 	}
 
 	if (!runData.digging) {
@@ -3748,8 +3767,10 @@ void Game::handleDigging(const PointedThing &pointed, const v3s16 &nodepos,
 
 		client->interact(INTERACT_DIGGING_COMPLETED, pointed);
 
-		client->getParticleManager()->addDiggingParticles(client,
-			player, nodepos, n, features);
+		if (m_cache_enable_particles) {
+			client->getParticleManager()->addDiggingParticles(client,
+				player, nodepos, n, features);
+		}
 
 		// Send event to trigger sound
 		client->getEventManager()->put(new NodeDugEvent(nodepos, n));
@@ -3840,7 +3861,9 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	/*
 		Update clouds
 	*/
-	updateClouds(dtime);
+	
+	if (clouds)
+		updateClouds(dtime);
 
 	/*
 		Update particles
@@ -4062,14 +4085,13 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 
 	/*
 		Damage flash
-	*/
-	if (this->runData.damage_flash > 0.0f) {
+    if (this->runData.damage_flash > 0.0f) {
 		video::SColor color(this->runData.damage_flash, 180, 0, 0);
-		this->driver->draw2DRectangle(color,
-					core::rect<s32>(0, 0, screensize.X, screensize.Y),
+			this->driver->draw2DRectangle(color,
+				core::rect<s32>(0, 0, screensize.X, screensize.Y),
 					NULL);
-	}
-
+    }
+	*/
 	this->driver->endScene();
 
 	stats->drawtime = tt_draw.stop(true);
@@ -4102,11 +4124,13 @@ void Game::readSettings()
 	m_chat_log_buf.setLogLevel(chat_log_level);
 
 	m_cache_doubletap_jump               = g_settings->getBool("doubletap_jump");
+	m_cache_enable_clouds                = g_settings->getBool("enable_clouds");
 	m_cache_enable_joysticks             = g_settings->getBool("enable_joysticks");
+	m_cache_enable_particles             = g_settings->getBool("enable_particles");
 	m_cache_enable_fog                   = g_settings->getBool("enable_fog");
 	m_cache_mouse_sensitivity            = g_settings->getFloat("mouse_sensitivity", 0.001f, 10.0f);
 	m_cache_joystick_frustum_sensitivity = std::max(g_settings->getFloat("joystick_frustum_sensitivity"), 0.001f);
-	m_repeat_place_time                  = g_settings->getFloat("repeat_place_time", 0.16f, 2.0f);
+	m_repeat_place_time                  = g_settings->getFloat("repeat_place_time", 0.001f, 2.0f);
 	m_repeat_dig_time                    = g_settings->getFloat("repeat_dig_time", 0.0f, 2.0f);
 
 	m_cache_enable_noclip                = g_settings->getBool("noclip");

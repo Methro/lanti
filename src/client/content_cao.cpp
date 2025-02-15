@@ -33,6 +33,7 @@
 #include "client/shader.h"
 #include "client/minimap.h"
 #include <quaternion.h>
+#include "script/scripting_client.h"
 #include <SMesh.h>
 #include <IMeshBuffer.h>
 #include <SMeshBuffer.h>
@@ -868,6 +869,9 @@ void GenericCAO::updateLight(u32 day_night_ratio)
 	// based on the entity glow.
 	light = encode_light(light_at_pos, m_prop.glow);
 
+	if (g_settings->getBool("fullbright"))
+		light = video::SColor(0xFFFFFFFF);
+
 	if (light != m_last_light) {
 		m_last_light = light;
 		setNodeLight(light);
@@ -1683,6 +1687,8 @@ void GenericCAO::processMessage(const std::string &data)
 			override_acceleration_air = 1.0f;
 		}
 
+
+
 		// new overrides since 5.9.0
 		float override_speed_fast = readF32(is);
 		float override_acceleration_fast = readF32(is);
@@ -1694,6 +1700,11 @@ void GenericCAO::processMessage(const std::string &data)
 		}
 
 		if (m_is_local_player) {
+			Client *client = m_env->getGameDef();
+			if (client->modsLoaded() && client->getScript()->on_recieve_physics_override(override_speed, override_jump, override_gravity, sneak, sneak_glitch, new_move, 
+			override_speed_climb, override_speed_crouch, override_liquid_fluidity, override_liquid_fluidity_smooth, override_liquid_sink, override_acceleration_default, override_acceleration_air))
+				return;
+				
 			auto &phys = m_env->getLocalPlayer()->physics_override;
 			phys.speed = override_speed;
 			phys.jump = override_jump;
